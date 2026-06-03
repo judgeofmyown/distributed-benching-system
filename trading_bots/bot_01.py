@@ -14,6 +14,28 @@ class Action(IntEnum):
     SELL = 2
     CANCEL = 3
 
+class ServerMsg(IntEnum):
+    ACK = 10
+    FILL = 15
+    REJECT = 30
+
+class ErrorCodes(IntEnum):
+    pass
+
+class RequestIdGenerator:
+    def __init__(self):
+        self._next = 1
+
+    def get(self):
+        rid = self._next
+        self._next += 1
+
+        # Wrap around after 2^32 - 1
+        if self._next > 0xFFFFFFFF:
+            self._next = 1
+
+        return rid
+
 class Bot:
     def __init__(self, asset_initial_price: int):
         self.server_host = SERVER_HOST
@@ -30,40 +52,48 @@ class Bot:
         self.asset_price = asset_initial_price
         self.std = 0.3 
         self.order_ids = []
+        self.network_latency = {}
+        self.req_id_gen = RequestIdGenerator() 
 
     async def listen_to_exchange(self, reader, writer):
-        """listen to exchange server continusly until exited."""
+        """
+        listen to exchange server continusly until exited.
+        Order acknowledgement (ACK) (9 Bytes)
+            1 Byte (Msg Type) + 4 byte (Int: ClientReq Id) + 4 bytes (Int: Order ID)
+            '!Bii'
+        Order Execution (FILL) (17 Bytes)
+            1 Byte (Msg Type) + 4 byte (Int: ClientReq Id) + 4 bytes (Int: Order ID) + 4 bytes (Int: Filled Quantity) + 4 bytes (Float: Executed Price)
+            '!Biiif'
+        Order Rejected/Error (REJ) (6 Bytes)
+            1 Byte (Msg Type) + 4 bytes (Int: Order ID) + 1 bytes (Byte: Error Code)
+            '!BiB'
+        Each message is prefixed with a length byte.
+        ex: [9]0x0A6734432300000231, which is encoding for, ACK[1 byte], Client request ID[4 byte], Order ID[4 byte]
+        """
         print(f"[+] Bot {self.b_id} started listening loop.")
         while True:
             try:
+                # Listening Binary encoded messages
+                length = (await reader.readexactly(1))[0]
+                msg_packet = await reader.readexactly(length)
+                time_arrival = time.perf_counter()
 
-                line_bytes = await reader.readline()
-                
-                if not line_bytes:
-                    print(f"\n[!] Bot {self.b_id}: Disconnected from the exchange server.")
-
-                cleaned = line_bytes.decode('utf-8').strip()
-                if not cleaned:
-                    continue
-                
-                try:
-                    msg = json.loads(cleaned)
-                    # capture system time here to compare against server time, and find out latency
+                if length == 9:
+                    # ACK message
+                    msg_type, client_req_id, order_id = struct.unpack("!Bii", msg_packet)
+                    start_time = self.network_latency.pop(client_req_id, None)
+                    round_trip_latency = -1
+                    if start_time is not None:
+                        round_trip_latency = time_arrival - start_time
                     
-                    if msg.get("Type") == "FILL":
-                        print(f"\n[ALERT] ** EXECUTION FILL ** -> Traded {msg['size']} units @ ${msg['price']:.2f}")
-                        continue
+                    
+                elif length == 17:
+                    # Trade Execution message
+                    msg_type, client_req_id, order_id, fill_qty, exec_price = struct.unpack("!Biiif", msg_packet)
 
-                    if msg.get("status") == "ACK":
-                        self.order_ids.append(msg['order_id'])
-                        print(f"\n[ACK] -> Order Accepted. Assigned ID: {msg['order_id']}")
-                        continue
-                        
-                    if msg.get("status") == "CANCELED":
-                        print(f"\n[ACK] -> Order {msg['order_id']} Canceled.")
-                        continue
-                except json.JSONDecodeError:
-                    pass
+                elif length == 10:
+                    msg_type, client_req_id, order_id, error_code = struct.unpack("!BiiB", msg_packet)
+                
 
             except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
                 print(f"[-] Bot {self.b_id}: Error listening to Exchange server!") 
@@ -74,16 +104,16 @@ class Bot:
         except Exception:
             pass
     
-    def encode_order(action: Action, order_id: int|None, size: int|None, price: float|None) -> bytes:
+    def encode_order(self, action: Action, client_req_id: int, order_id: int|None, size: int|None, price: float|None) -> bytes:
         """fixed length binary encoding"""
         if order_id == None:
-            # B, i, f
-            format_spec = '!Bif'
-            return struct.pack(format_spec, action.value, size, price)
+            # 1 Byte Action type , 4 bye CLient request Id, 4 byte size, 4 byte price
+            format_spec = '!Biif'
+            return struct.pack(format_spec, action.value, client_req_id, size, price)
         else:
-            # B, i
-            format_spec = '!Bi'
-            return struct.pack(format_spec, action.value, order_id)
+            # 1 Byte Action tyep, 4 byte Client Req Id, 4 byte order id
+            format_spec = '!Bii'
+            return struct.pack(format_spec, action.value, client_req_id, order_id)
 
     def order_action(self):
         """" Decides its action"""
@@ -115,32 +145,42 @@ class Bot:
 
      
     def strategy_coroutine(self, writer):
-        """Wait for some time, take action, order blast."""
+        """
+        Wait for some time, take action, order blast. 
+        Sends order packets:
+            BUY/SELL (13 Bytes)
+                1 Byte + 4 byte (Int: ClientReq Id) + 4 byte (Int: Size) + 4 byte (float: Price)
+                '!Biif'
+            CANCEL (9 Bytes)
+                1 Byte + 4 byte (Int: ClientReq Id) + 4 byte (Int: Order Id)
+                'Bii'
+        """
         
         while self.is_connected:
-            # wait for some time
+            # wait for some time before taking order action
             await asyncio.sleep(2)
-            command = self.order_action()
-            
+
+            command = self.order_action() 
+            client_req_id = self.req_id_gen.get()           
             if len(command) == 3:
                 # BUY/SELL
                 action, size, price = command
                 if action == Action.BUY.name:
                     self.buys+=1
-                    order_bin_packet = encode_order(Action.BUY, size=size, price=price)
+                    order_bin_packet = self.encode_order(Action.BUY, client_req_id=client_req_id, size=size, price=price)
                 else:
                     self.sells+=1
-                    order_bin_packet = encode_order(Action.SELL, size=size, price=price)     
-                
+                    order_bin_packet = self.encode_order(Action.SELL, client_req_id=client_req_id, size=size, price=price)      
             else:
                 # CANCEL
                 action, order_id = command
                 self.canceled+=1
-
-                order_bin_packet = encode_order(Action.CANCEL, order_id=order_id)
-            
+                order_bin_packet = self.encode_order(Action.CANCEL, client_req_id=client_req_id, order_id=order_id)
+                   
             # write to the server commands
             writer.write(order_bin_packet)
+            # record the time msg sent
+            self.network_latency[client_req_id] = time.perf_counter()
             await writer.drain()
 
     async def start(self):
@@ -157,9 +197,3 @@ class Bot:
 
         self.listen_task = asyncio.create_task(self.listen_to_exchange(reader, writer))
         self.strategy_task = asyncio.create_task(self.strategy_coroutine(writer))
-
-
-
-
-
-
