@@ -1,14 +1,13 @@
 import socket
+import random
 import asyncio
 import uuid
 import threading
 import time
 import struct
 from enum import IntEnum
-
-SERVER_HOST = '127.0.0.1'
-SERVER_PORT = 8888
-
+import os
+from config import SERVER_HOST, SERVER_PORT, PROB_BUY, PROB_SELL, PROB_CANCEL, SLEEP_TIMEOUT, STD_DEV
 class Action(IntEnum):
     BUY = 1
     SELL = 2
@@ -43,18 +42,18 @@ class Bot:
         self.b_id = str(uuid.uuid4())
         self.client_id = None
         self.is_connected = False
+        self.sleep_timeout = SLEEP_TIMEOUT
         self.buys = 0
         self.sells = 0
         self.canceled = 0
-        self.p_buy = 45
-        self.p_sell = 45
-        self.p_cancel = 10
+        self.p_buy = PROB_BUY 
+        self.p_sell = PROB_SELL
+        self.p_cancel = PROB_CANCEL
         self.asset_price = asset_initial_price
-        self.std = 0.3 
+        self.std = STD_DEV 
         self.order_ids = []
         self.network_latency = {}
         self.req_id_gen = RequestIdGenerator() 
-
     async def listen_to_exchange(self, reader, writer):
         """
         listen to exchange server continusly until exited.
@@ -85,6 +84,7 @@ class Bot:
                     round_trip_latency = -1
                     if start_time is not None:
                         round_trip_latency = time_arrival - start_time
+                    self.order_ids.append(order_id)
                     
                     
                 elif length == 17:
@@ -158,7 +158,7 @@ class Bot:
         
         while self.is_connected:
             # wait for some time before taking order action
-            await asyncio.sleep(2)
+            await asyncio.sleep(self.sleep_timeout)
 
             command = self.order_action() 
             client_req_id = self.req_id_gen.get()           
