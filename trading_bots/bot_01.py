@@ -36,7 +36,7 @@ class RequestIdGenerator:
         return rid
 
 class Bot:
-    def __init__(self, asset_initial_price: int):
+    def __init__(self, asset_initial_price: int, metrics_queue: asyncio.Queue):
         self.server_host = SERVER_HOST
         self.server_port = SERVER_PORT
         self.b_id = str(uuid.uuid4())
@@ -52,17 +52,20 @@ class Bot:
         self.asset_price = asset_initial_price
         self.std = STD_DEV 
         self.order_ids = []
+        self.metrics_queue = metrics_queue
         self.network_latency = {}
-        self.req_id_gen = RequestIdGenerator() 
+        self.req_id_gen = RequestIdGenerator()
+
     async def listen_to_exchange(self, reader, writer):
         """
         listen to exchange server continusly until exited.
-        Order acknowledgement (ACK) (9 Bytes)
-            1 Byte (Msg Type) + 4 byte (Int: ClientReq Id) + 4 bytes (Int: Order ID)
-            '!Bii'
-        Order Execution (FILL) (17 Bytes)
-            1 Byte (Msg Type) + 4 byte (Int: ClientReq Id) + 4 bytes (Int: Order ID) + 4 bytes (Int: Filled Quantity) + 4 bytes (Float: Executed Price)
-            '!Biiif'
+        Order acknowledgement (ACK) (25 Bytes)
+            1 Byte (Msg Type) + 4 byte (Int: ClientReq Id) + 4 bytes (Int: Order ID) + time_recv + time_send
+            '!Biiqq'
+        Order Execution (FILL) (33 Bytes)
+            1 Byte (Msg Type) + 4 byte (Int: ClientReq Id) + 4 bytes (Int: Order ID) + 4 bytes (Int: Filled Quantity) + 4 bytes (Float: Executed Price)+ time_recv + time_send
+
+            '!Biiifqq'
         Order Rejected/Error (REJ) (6 Bytes)
             1 Byte (Msg Type) + 4 bytes (Int: Order ID) + 1 bytes (Byte: Error Code)
             '!BiB'
@@ -75,21 +78,30 @@ class Bot:
                 # Listening Binary encoded messages
                 length = (await reader.readexactly(1))[0]
                 msg_packet = await reader.readexactly(length)
-                time_arrival = time.perf_counter()
+                
+                time_arrival_ns = time.time_ns()
 
-                if length == 9:
+                if length == 25:
                     # ACK message
-                    msg_type, client_req_id, order_id = struct.unpack("!Bii", msg_packet)
-                    start_time = self.network_latency.pop(client_req_id, None)
-                    round_trip_latency = -1
-                    if start_time is not None:
-                        round_trip_latency = time_arrival - start_time
+                    msg_type, client_req_id, order_id, t_recv, t_send = struct.unpack("!Biiqq", msg_packet)
+                    
+                    t_start_ns = self.network_latency.pop(client_req_id, None)
+                    if t_start_ns is not None:
+                        total_rtt_ms = (time_arrival_ns - t_start_ns) / 1_000_000.0
+                        server_processing_ms = (t_send - t_recv)  / 1_000_000.0
+                        wire_flight_ms = total_rtt_ms - server_processing_ms
+                        
+                        try:
+                            self.metrics_queue.put_nowait((total_rtt_ms, server_processing_ms, wire_flight_ms))
+                        except asyncio.QueueFull:
+                            pass
+
                     self.order_ids.append(order_id)
                     
                     
-                elif length == 17:
+                elif length == 33:
                     # Trade Execution message
-                    msg_type, client_req_id, order_id, fill_qty, exec_price = struct.unpack("!Biiif", msg_packet)
+                    msg_type, client_req_id, order_id, fill_qty, exec_price, t_recv, t_send = struct.unpack("!Biiifqq", msg_packet)
 
                 elif length == 10:
                     msg_type, client_req_id, order_id, error_code = struct.unpack("!BiiB", msg_packet)
@@ -144,7 +156,7 @@ class Bot:
             return action, order_id 
 
      
-    def strategy_coroutine(self, writer):
+    async def strategy_coroutine(self, writer):
         """
         Wait for some time, take action, order blast. 
         Sends order packets:
@@ -180,7 +192,7 @@ class Bot:
             # write to the server commands
             writer.write(order_bin_packet)
             # record the time msg sent
-            self.network_latency[client_req_id] = time.perf_counter()
+            self.network_latency[client_req_id] = time.time_ns()
             await writer.drain()
 
     async def start(self):
