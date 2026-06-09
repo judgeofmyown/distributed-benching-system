@@ -12,6 +12,8 @@ class Action(IntEnum):
     BUY = 1
     SELL = 2
     CANCEL = 3
+    MRKET_BUY = 4
+    MARKET_SELL = 5
 
 class ServerMsg(IntEnum):
     ACK = 10
@@ -118,45 +120,54 @@ class Bot:
     
     def encode_order(self, action: Action, client_req_id: int, order_id: int|None, size: int|None, price: float|None) -> bytes:
         """fixed length binary encoding"""
-        if order_id == None:
-            # 1 Byte Action type , 4 bye CLient request Id, 4 byte size, 4 byte price
-            format_spec = '!Biif'
-            return struct.pack(format_spec, action.value, client_req_id, size, price)
-        else:
-            # 1 Byte Action tyep, 4 byte Client Req Id, 4 byte order id
-            format_spec = '!Bii'
-            return struct.pack(format_spec, action.value, client_req_id, order_id)
+        
+        if action in (Action.BUY, Action.SELL):
+            # Limit Orders
+            return struct.pack('!Biif', action.value, client_req_id, size, price)
+        elif action in (Action.MARKET_BUY, Action.MARKET_SELL):
+            # Market Orders
+            # Send 0.0 as price placeholder
+            return struct.pack('!Biif', action.value, client_req_id, size, 0.0)
+        elif action == Action.CANCEL:
+            return struct.pack('!Bii', action.value, client_req_id, order_id)
+
 
     def order_action(self):
         """" Decides its action"""
         
-        action = ""
-
         if self.order_ids:
+            # You can balance these probabilities from your Nomad env files later
             action = random.choices(
-                        ["BUY", "SELL", "CANCEL"],
-                        weights=[self.p_buy, self.p_sell, self.p_cancel],
-                        k=1
-                    )[0]
+                ["BUY", "SELL", "MARKET_BUY", "MARKET_SELL", "CANCEL"],
+                weights=[self.p_buy, self.p_sell, self.p_market_buy, self.p_market_sell, self.p_cancel], 
+                k=1
+            )[0]
         else:
             action = random.choices( 
-                        ["BUY", "SELL"],
-                        weights=[self.p_buy, self.p_sell],
-                        k=1
-                    )[0]
+                ["BUY", "SELL", "MARKET_BUY", "MARKET_SELL"],
+                weights=[self.p_buy, self.p_sell, self.p_market_buy, self.p_market_sell],
+                k=1
+            )[0]
 
+        # Limit Execution Pipeline
         if action in ["BUY", "SELL"]:        
             size = max(1, round(random.gauss(50, 20)))
             price = max(0.01, round(random.gauss(self.asset_price, self.std), 2))
             return action, size, price
+            
+        # Market Execution Pipeline
+        elif action in ["MARKET_BUY", "MARKET_SELL"]:
+            size = max(1, round(random.gauss(30, 10))) # Typically slightly different sizes
+            return action, size
+            
+        # Cancel Execution Pipeline
         else:
             order_id_to_cancel = random.randint(0, len(self.order_ids)-1)
             order_id = self.order_ids[order_id_to_cancel]
             self.order_ids.remove(order_id)
-            return action, order_id 
+            return action, order_id
 
-     
-    async def strategy_coroutine(self, writer):
+     async def strategy_coroutine(self, writer):
         """
         Wait for some time, take action, order blast. 
         Sends order packets:
@@ -173,22 +184,26 @@ class Bot:
             await asyncio.sleep(self.sleep_timeout)
 
             command = self.order_action() 
-            client_req_id = self.req_id_gen.get()           
+            client_req_id = self.req_id_gen.get()    
+
             if len(command) == 3:
                 # BUY/SELL
                 action, size, price = command
-                if action == Action.BUY.name:
-                    self.buys+=1
-                    order_bin_packet = self.encode_order(Action.BUY, client_req_id=client_req_id, size=size, price=price)
-                else:
-                    self.sells+=1
-                    order_bin_packet = self.encode_order(Action.SELL, client_req_id=client_req_id, size=size, price=price)      
-            else:
-                # CANCEL
+                act_enum = Action.BUY if action == "BUY" else Action.SELL
+                if act_enum == Action.BUY: self.buys += 1
+                else: self.sells += 1
+                order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, size=size, price=price)
+            elif len(command) == 2 and isinstance(command[0], str) and command[0].startswith("MARKET"):
                 action, order_id = command
-                self.canceled+=1
-                order_bin_packet = self.encode_order(Action.CANCEL, client_req_id=client_req_id, order_id=order_id)
-                   
+                act_enum = Action.MARKET_BUY if action == "MARKET_BUY" else Action.MARKET_SELL
+                if act_enum == Action.MARKET_BUY: self.buys += 1
+                else: self.sells += 1
+                order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, order_id=None, size=size, price=None)
+            else:
+                action, order_id = command
+                self.canceled += 1
+                order_bin_packet = self.encode_order(Action.CANCEL, client_req_id=client_req_id, order_id=order_id, size=None, price=None)
+
             # write to the server commands
             writer.write(order_bin_packet)
             # record the time msg sent
