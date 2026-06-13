@@ -1,0 +1,25 @@
+*{
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    min-height: 100vh;
+    background: #f4f4f4;
+}
+
+nav {
+    padding: 10px 5px;
+    background: #e4e4e4;
+    border-bottom: 1px solid;
+}
+
+.uploadNStat-cntr {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px;
+}
+
