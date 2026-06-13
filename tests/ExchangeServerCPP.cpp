@@ -386,8 +386,8 @@ int main() {
     OrderBook orderbook;
     while (true) {
         int client_id = accept(server_fd, nullptr, nullptr);
-        if (client_fd >= 0) {
-            std::thread(handle_client, client_fd, std::ref(orderbook)).detach();
+        if (client_id >= 0) {
+            std::thread(handle_client, client_id, std::ref(orderbook)).detach();
         }
     }
     
