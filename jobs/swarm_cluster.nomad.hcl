@@ -15,11 +15,11 @@ job "swarm_cluster" {
 
       template {
         data = <<EOH
-        {{ range service "matching-engine" }}
-        SERVER_HOST = "{{ .Address }}"
-        SERVER_PORT = "{{ .Port }}"
-        {{ end }}
-        EOH
+{{ range service "user-code-server" }}
+SERVER_HOST = "{{ .Address }}"
+SERVER_PORT = "{{ .Port }}"
+{{ end }}
+EOH
 
         destination = "secrets/env"
         env         = true
@@ -58,21 +58,18 @@ job "swarm_cluster" {
  
       template {
         data = <<EOH
-        {{ range service "matching-engine" }}
-        SERVER_HOST = "{{ .Address }}"
-        SERVER_PORT = "{{ .Port }}"
-        {{ end }}
-        EOH
+{{ range service "user-code-server" }}
+SERVER_HOST = "{{ .Address }}"
+SERVER_PORT = "{{ .Port }}"
+{{ end }}
+EOH
 
         destination = "secrets/env"
         env         = true
       }
 
       env {
-        NUM_BOTS            = "50"
-        SERVER_HOST         = ""
-        SERVER_PORT         = ""
-        
+        NUM_BOTS            = "50" 
         PROB_BUY            = "0.75"
         PROB_SELL           = "0.15"
         PROB_CANCEL         = "0.10"
@@ -105,11 +102,11 @@ job "swarm_cluster" {
        
       template {
         data = <<EOH
-        {{ range service "matching-engine" }}
-        SERVER_HOST = "{{ .Address }}"
-        SERVER_PORT = "{{ .Port }}"
-        {{ end }}
-        EOH
+{{ range service "user-code-server" }}
+SERVER_HOST = "{{ .Address }}"
+SERVER_PORT = "{{ .Port }}"
+{{ end }}
+EOH
 
         destination = "secrets/env"
         env         = true
@@ -117,9 +114,6 @@ job "swarm_cluster" {
 
       env {
         NUM_BOTS            = "50"
-        SERVER_HOST         = ""
-        SERVER_PORT         = ""
-        
         PROB_BUY            = "0.15"
         PROB_SELL           = "0.75"
         PROB_CANCEL         = "0.10"
