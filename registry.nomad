@@ -6,9 +6,23 @@ job "registry" {
     count = 1
 
     network {
-      # This forces Nomad to host the registry on port 5000 of your machine
+      # Use host network mode so port 5000 attaches directly to your WSL IP interface
+      mode = "host"
       port "http" {
         static = 5000
+      }
+    }
+
+    service {
+      name      = "docker-registry"
+      port      = "http"
+      provider  = "consul"
+
+      check {
+        type     = "http"
+        path     = "/v2/"
+        interval = "10s"
+        timeout  = "2s"
       }
     }
 
@@ -18,12 +32,14 @@ job "registry" {
       config {
         image = "registry:2"
         ports = ["http"]
+        
+        # Ensure your local directory exists before running
         mount {
-            type = "bind"
-            source = "/tmp/nomad-registry"
-            target = "/var/lib/registry"
+          type   = "bind"
+          source = "/tmp/nomad-registry"
+          target = "/var/lib/registry"
         }
-    }
+      }
 
       resources {
         cpu    = 500
