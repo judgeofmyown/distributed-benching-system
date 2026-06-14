@@ -356,11 +356,11 @@ void handle_client(int client_fd, OrderBook& orderbook) {
 
 int main() {
 
-    const char* nomad_ip = std::getenv("NOMAD_IP_exchange");
-    const char* nomad_port = std::getenv("NOMAD_PORT_exchange");
+    const char* nomad_ip = std::getenv("NOMAD_IP");
+    const char* nomad_port = std::getenv("NOMAD_PORT");
 
     std::string server_ip = nomad_ip ? nomad_ip : "0.0.0.0";
-    int server_port = nomad_port ? std::stoi(nomad_port) : 8888;
+    int server_port = nomad_port ? std::stoi(nomad_port) : 8080;
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
