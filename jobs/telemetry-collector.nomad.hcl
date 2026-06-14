@@ -17,7 +17,7 @@ job "global-telemetry" {
       config {
         image   = "telegraf:1.30-alpine"
         volumes = ["local/telegraf.conf:/etc/telegraf/telegraf.conf"]
-        ports   = ["stats_udp", "prom_http"]
+        ports   = ["statsd_udp", "prom_http"]
       }
       template {
         source      = "telemetry/telegraf.conf"
@@ -25,7 +25,7 @@ job "global-telemetry" {
         # automatic reload upon telegraf.cong updation
         change_mode = "restart"
       }
-      resource {
+      resources {
         cpu     = 300
         memory  = 128
       }
