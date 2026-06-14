@@ -40,7 +40,7 @@ async def main_async():
 
     reporter_task = asyncio.create_task(telemetry_reporter_worker(telemetry_host, telemetry_port))
 
-    swarm = [Bot(ASSET_INITIAL_PRICE, METRIC_QUEUE) for _ in range(NUM_BOTS)]
+    swarm = [Bot(ASSET_INITIAL_PRICE, METRICS_QUEUE) for _ in range(NUM_BOTS)]
 
     for bot in swarm:
         await bot.start()
