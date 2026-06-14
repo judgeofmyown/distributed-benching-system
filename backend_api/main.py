@@ -6,6 +6,7 @@ import tempfile
 import shutil
 from pathlib import Path
 import httpx
+import asyncio
 
 app = FastAPI()
 
@@ -38,11 +39,13 @@ RUNTIME_CONFIG = {
 def get_client_swarm_payload(submission_id: str) -> dict:
 
     template_data = (
-        "{{ range service \"user-code-service\" }}\n"
-        "SERVER_HOST = \"{{ .Address }}\"\n"
-        "SERVER_PORT = \"{{ .Port }}\"\n"
-        "{{ end }}"
+        '{{ range service "user-code-server" }}\n'
+        'SERVER_HOST = "{{ .Address }}"\n'
+        'SERVER_PORT = "{{ .Port }}"\n'
+        '{{ end }}'
     )
+
+    print(template_data)
 
     return {
         "Job": {
@@ -57,11 +60,11 @@ def get_client_swarm_payload(submission_id: str) -> dict:
                     "Tasks": [{
                         "Name": "swarm",
                         "Driver": "docker",
-                        "Config": {"image": "localhost:5000/trading_bot:v1.0.0"},
-                        "Templates": [{"EmbeddedTmpl": template_data, "DestPath": "secrets/env", "Envvars": True}],
+                        "Config": {"image": "localhost:5000/trading_bot:v1.0.0", "network_mode": "host"},
+                        "Templates": [{"EmbeddedTmpl": template_data, "DestPath": "secrets/env", "EnvVars": True}],
                         "Env": {
-                            "NUM_BOTS": "50", "PROB_BUY": "0.45", "PROB_SELL": "0.45", "PROB_CANCEL": "0.10",
-                            "ASSET_INITIAL_PRICE": "50000", "STD_DEV": "2.5", "SLEEP_TIMEOUT": "0.005",
+                            "NUM_BOTS": "50", "PROB_BUY": "45", "PROB_SELL": "45", "PROB_CANCEL": "10",
+                            "ASSET_INITIAL_PRICE": "50000", "STD_DEV": "1.5", "SLEEP_TIMEOUT": "1",
                             "TELEMETRY_HOST": "${attr.unique.network.ip-address}", "TELEMETRY_PORT": "8125"
                         },
                         "Resources": {"CPU": 1500, "MemoryMB": 512}
@@ -73,11 +76,11 @@ def get_client_swarm_payload(submission_id: str) -> dict:
                     "Tasks": [{
                         "Name": "swarm",
                         "Driver": "docker",
-                        "Config": {"image": "localhost:5000/trading_bot:v1.0.0"},
-                        "Templates": [{"EmbeddedTmpl": template_data, "DestPath": "secrets/env", "Envvars": True}],
+                        "Config": {"image": "localhost:5000/trading_bot:v1.0.0", "network_mode": "host"},
+                        "Templates": [{"EmbeddedTmpl": template_data, "DestPath": "secrets/env", "EnvVars": True}],
                         "Env": {
-                            "NUM_BOTS": "50", "PROB_BUY": "0.75", "PROB_SELL": "0.15", "PROB_CANCEL": "0.10",
-                            "ASSET_INITIAL_PRICE": "50000", "STD_DEV": "5.0", "SLEEP_TIMEOUT": "0.015",
+                            "NUM_BOTS": "50", "PROB_BUY": "75", "PROB_SELL": "15", "PROB_CANCEL": "10",
+                            "ASSET_INITIAL_PRICE": "50000", "STD_DEV": "2.2", "SLEEP_TIMEOUT": "1",
                             "TELEMETRY_HOST": "${attr.unique.network.ip-address}", "TELEMETRY_PORT": "8125"
                         },
                         "Resources": {"CPU": 1500, "MemoryMB": 512}
@@ -89,11 +92,11 @@ def get_client_swarm_payload(submission_id: str) -> dict:
                     "Tasks": [{
                         "Name": "swarm",
                         "Driver": "docker",
-                        "Config": {"image": "localhost:5000/trading_bot:v1.0.0"},
-                        "Templates": [{"EmbeddedTmpl": template_data, "DestPath": "secrets/env", "Envvars": True}],
+                        "Config": {"image": "localhost:5000/trading_bot:v1.0.0", "network_mode": "host"},
+                        "Templates": [{"EmbeddedTmpl": template_data, "DestPath": "secrets/env", "EnvVars": True}],
                         "Env": {
-                            "NUM_BOTS": "50", "PROB_BUY": "0.15", "PROB_SELL": "0.75", "PROB_CANCEL": "0.10",
-                            "ASSET_INITIAL_PRICE": "50000", "STD_DEV": "4.0", "SLEEP_TIMEOUT": "0.01",
+                            "NUM_BOTS": "50", "PROB_BUY": "15", "PROB_SELL": "75", "PROB_CANCEL": "10",
+                            "ASSET_INITIAL_PRICE": "50000", "STD_DEV": "2.0", "SLEEP_TIMEOUT": "2",
                             "TELEMETRY_HOST": "${attr.unique.network.ip-address}", "TELEMETRY_PORT": "8125"
                         },
                         "Resources": {"CPU": 1500, "MemoryMB": 512}
@@ -142,15 +145,13 @@ async def upload_file(file: UploadFile = File(...)):
                         "Name": "runner",
                         "Count": 1,
                         
-                        # opens up the host machine interface to listen to port 8888 and
-                        # routes traffic into gVisor's Netstack
+
                         "Networks": [
                             {
-                                "Mode": "host",
                                 "ReservedPorts": [
                                     {
                                         "label": "exchange_port",
-                                        "Value": 8888
+                                        "Value": 8080
                                     }
                                 ]
                             }        
@@ -170,6 +171,10 @@ async def upload_file(file: UploadFile = File(...)):
                             {
                                 "Name": "executor",
                                 "Driver": "docker",
+                                "Env": {
+                                    "NOMAD_IP": "0.0.0.0",
+                                    "NOMAD_PORT": "8080"
+                                },
                                 "Config": {
                                     "image": runtime["image"],
                                     "runtime": "runc",
@@ -207,7 +212,7 @@ async def upload_file(file: UploadFile = File(...)):
             response = await client.post(NOMAD_URL, json=job_payload)
             if response.status_code != 200:
                 return JSONResponse(status_code=500, content={"message": f"Nomad failed: {response.text}"})
-            
+            await asyncio.sleep(15) 
             swarm_res = await client.post(NOMAD_URL, json=swarm_payload)
             if swarm_res.status_code != 200:
                 return JSONResponse(status_code=500, content={"message": f"Client swarm launch failed: {swarm_res.text}"})
