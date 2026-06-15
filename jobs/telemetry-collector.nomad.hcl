@@ -19,11 +19,33 @@ job "global-telemetry" {
         volumes = ["local/telegraf.conf:/etc/telegraf/telegraf.conf"]
         ports   = ["statsd_udp", "prom_http"]
       }
-      template {
-        source      = "telemetry/telegraf.conf"
-        destination = "local/telegraf.conf"
+      template { 
+        data = <<EOF
+[agent]
+    interval = "5s"
+    round_interval = true
+    metric_batch_size = 1000
+    metric_buffer_limit = 10000
+
+[[inputs.statsd]]
+    protocol = "udp"
+    service_address = ":8125"
+
+    delete_gauges = true
+    delete_counters = true
+    delete_timings = true
+
+    percentiles = [50.0, 90.0, 95.0, 99.0, 99.9]
+    metric_separator = "."
+
+[[outputs.prometheus_client]]
+    listen = ":9273"
+    path = "/metrics"
+EOF
+
+        destination             = "local/telegraf.conf"
         # automatic reload upon telegraf.cong updation
-        change_mode = "restart"
+        change_mode             = "restart"
       }
       resources {
         cpu     = 300
@@ -36,11 +58,11 @@ job "global-telemetry" {
 
         driver = "docker"
         config {
-            image   = "prom/node-exporter:v1.8.0"
-            pid     = "host"
-            volumes = ["/:/host:ro,rslave"]
-            ports   = ["node_exp"]
-            args    = ["--path.rootfs=/host"]
+            image           = "prom/node-exporter:v1.8.0"
+            pid_mode        = "host"
+            volumes         = ["/:/host:ro,rslave"]
+            ports           = ["node_exp"]
+            args            = ["--path.rootfs=/host"]
 
         }
         resources {
