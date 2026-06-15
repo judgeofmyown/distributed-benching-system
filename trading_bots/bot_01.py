@@ -7,12 +7,12 @@ import time
 import struct
 from enum import IntEnum
 import os
-from config import SERVER_HOST, SERVER_PORT, PROB_BUY, PROB_SELL, PROB_CANCEL, SLEEP_TIMEOUT, STD_DEV
+from config import SERVER_HOST, SERVER_PORT, PROB_BUY, PROB_SELL, PROB_CANCEL, PROB_MARKET_BUY, PROB_MARKET_SELL, SLEEP_TIMEOUT, STD_DEV
 class Action(IntEnum):
     BUY = 1
     SELL = 2
     CANCEL = 3
-    MRKET_BUY = 4
+    MARKET_BUY = 4
     MARKET_SELL = 5
 
 class ServerMsg(IntEnum):
@@ -39,26 +39,32 @@ class RequestIdGenerator:
 
 class Bot:
     def __init__(self, asset_initial_price: int, metrics_queue: asyncio.Queue):
-        self.server_host = SERVER_HOST
-        self.server_port = SERVER_PORT
-        self.b_id = str(uuid.uuid4())
-        self.client_id = None
-        self.is_connected = False
-        self.sleep_timeout = SLEEP_TIMEOUT
-        self.buys = 0
-        self.sells = 0
-        self.canceled = 0
-        self.max_orders = 10000
-        self.orders_sent = 0
-        self.p_buy = PROB_BUY 
-        self.p_sell = PROB_SELL
-        self.p_cancel = PROB_CANCEL
-        self.asset_price = asset_initial_price
-        self.std = STD_DEV 
-        self.order_ids = []
-        self.metrics_queue = metrics_queue
-        self.network_latency = {}
-        self.req_id_gen = RequestIdGenerator()
+        self.server_host        = SERVER_HOST
+        self.server_port        = SERVER_PORT
+        self.b_id               = str(uuid.uuid4())
+        self.client_id          = None
+        self.is_connected       = False
+        self.sleep_timeout      = SLEEP_TIMEOUT
+        self.buys               = 0
+        self.sells              = 0
+        self.canceled           = 0
+        self.p_buy              = PROB_BUY 
+        self.p_sell             = PROB_SELL
+        self.p_cancel           = PROB_CANCEL
+        self.p_market_buy       = PROB_MARKET_BUY
+        self.p_market_sell      = PROB_MARKET_SELL
+        self.asset_price        = asset_initial_price
+        self.std                = STD_DEV 
+        self.order_ids          = []
+        self.metrics_queue      = metrics_queue
+        self.network_latency    = {}
+        self.req_id_gen         = RequestIdGenerator()
+        
+        self.orders_sent        = 0
+        self.target_orders      = 1000
+        self.sending            = True
+        self.drain_time         = 10 # seconds
+        
 
     async def listen_to_exchange(self, reader, writer):
         """
@@ -71,7 +77,7 @@ class Bot:
 
             '!Biiifqq'
         Order Rejected/Error (REJ) (6 Bytes)
-            1 Byte (Msg Type) + 4 bytes (Int: Order ID) + 1 bytes (Byte: Error Code)
+            1 Byte (Msg Type) + 4 byte Client Req Id + 4 bytes (Int: Order ID) + 1 bytes (Byte: Error Code)
             '!BiB'
         Each message is prefixed with a length byte.
         ex: [9]0x0A6734432300000231, which is encoding for, ACK[1 byte], Client request ID[4 byte], Order ID[4 byte]
@@ -112,7 +118,8 @@ class Bot:
 
 
             except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
-                print(f"[-] Bot {self.b_id}: Error listening to Exchange server!") 
+                print(f"[-] Bot {self.b_id}: Error listening to Exchange server!")
+                self.is_connected = False
                 break
         try:
             writer.close()
@@ -120,7 +127,7 @@ class Bot:
         except Exception:
             pass
 
-    def encode_order(self, action: Action, client_req_id: int, order_id: int|None, size: int|None, price: float|None) -> bytes:
+    def encode_order(self, action: Action, client_req_id: int, order_id: int|None = None, size: int|None = None, price: float|None = None) -> bytes:
         """fixed length binary encoding"""
 
         if action in (Action.BUY, Action.SELL):
@@ -132,6 +139,7 @@ class Bot:
             return struct.pack('!Biif', action.value, client_req_id, size, 0.0)
         elif action == Action.CANCEL:
             return struct.pack('!Bii', action.value, client_req_id, order_id)
+        raise ValueError("Invalid Action Type.")
 
 
     def order_action(self):
@@ -179,36 +187,49 @@ class Bot:
                 1 Byte + 4 byte (Int: ClientReq Id) + 4 byte (Int: Order Id)
                 'Bii'
         """
-        while self.is_connected:
+        while self.is_connected and self.sending:
             # wait for some time before taking order action
             await asyncio.sleep(self.sleep_timeout)
+            if not self.is_connected: # checking incase connection droped whle sleep
+                break
+
 
             command = self.order_action() 
-            client_req_id = self.req_id_gen.get()    
+            client_req_id = self.req_id_gen.get()
 
-            if len(command) == 3:
-                # BUY/SELL
-                action, size, price = command
-                act_enum = Action.BUY if action == "BUY" else Action.SELL
-                if act_enum == Action.BUY: self.buys += 1
-                else: self.sells += 1
-                order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, size=size, price=price)
-            elif len(command) == 2 and isinstance(command[0], str) and command[0].startswith("MARKET"):
-                action, order_id = command
-                act_enum = Action.MARKET_BUY if action == "MARKET_BUY" else Action.MARKET_SELL
-                if act_enum == Action.MARKET_BUY: self.buys += 1
-                else: self.sells += 1
-                order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, order_id=None, size=size, price=None)
-            else:
-                action, order_id = command
-                self.canceled += 1
-                order_bin_packet = self.encode_order(Action.CANCEL, client_req_id=client_req_id, order_id=order_id, size=None, price=None)
+            try:
 
-            # write to the server commands
-            writer.write(order_bin_packet)
-            # record the time msg sent
-            self.network_latency[client_req_id] = time.time_ns()
-            await writer.drain()
+                if len(command) == 3:
+                    # BUY/SELL
+                    action, size, price = command
+                    act_enum = Action.BUY if action == "BUY" else Action.SELL
+                    if act_enum == Action.BUY: self.buys += 1
+                    else: self.sells += 1
+                    order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, size=size, price=price)
+                elif len(command) == 2 and isinstance(command[0], str) and command[0].startswith("MARKET"):
+                    action, size = command
+                    act_enum = Action.MARKET_BUY if action == "MARKET_BUY" else Action.MARKET_SELL
+                    if act_enum == Action.MARKET_BUY: self.buys += 1
+                    else: self.sells += 1
+                    order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, size=size)
+                else:
+                    action, order_id = command
+                    self.canceled += 1
+                    order_bin_packet = self.encode_order(Action.CANCEL, client_req_id=client_req_id, order_id=order_id)
+
+                # write to the server commands
+                writer.write(order_bin_packet)
+                # record the time msg sent
+                self.network_latency[client_req_id] = time.time_ns()
+                await writer.drain()
+                self.orders_sent +=1
+
+                if self.orders_sent >= self.target_orders:
+                    self.sending = False
+            except (ConnectionResetError, BrokenPipeError):
+                print(f"[-] Bot {self.b_id}: Connection broken while writing pipeline.")
+                self.is_connected = False
+                break
 
     async def start(self):
         """connects to exchange server"""
@@ -224,3 +245,14 @@ class Bot:
 
         self.listen_task = asyncio.create_task(self.listen_to_exchange(reader, writer))
         self.strategy_task = asyncio.create_task(self.strategy_coroutine(writer))
+
+        await self.strategy_task
+
+        await asyncio.sleep(self.drain_time)
+        
+        self.listen_task.cancel()
+        try:
+            await self.listen_task
+        except asyncio.CancelledError:
+            pass
+
