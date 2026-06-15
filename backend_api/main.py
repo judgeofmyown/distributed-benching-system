@@ -56,14 +56,14 @@ def get_client_swarm_payload(submission_id: str) -> dict:
             "TaskGroups": [
                 {
                     "Name": "market-makers",
-                    "Count": 5,
+                    "Count": 3,
                     "Tasks": [{
                         "Name": "swarm",
                         "Driver": "docker",
                         "Config": {"image": "localhost:5000/trading_bot:v1.0.0", "network_mode": "host"},
                         "Templates": [{"EmbeddedTmpl": template_data, "DestPath": "secrets/env", "EnvVars": True}],
                         "Env": {
-                            "NUM_BOTS": "50", "PROB_BUY": "45", "PROB_SELL": "45", "PROB_CANCEL": "10",
+                            "NUM_BOTS": "50", "PROB_BUY": "30", "PROB_SELL": "30", "PROB_CANCEL": "10", "PROB_MARKET_BUY": "15","PROB_MARKET_SELL": "15",
                             "ASSET_INITIAL_PRICE": "50000", "STD_DEV": "1.5", "SLEEP_TIMEOUT": "1",
                             "TELEMETRY_HOST": "${attr.unique.network.ip-address}", "TELEMETRY_PORT": "8125"
                         },
@@ -72,14 +72,14 @@ def get_client_swarm_payload(submission_id: str) -> dict:
                 },
                 {
                     "Name": "trend-followers",
-                    "Count": 5,
+                    "Count": 3,
                     "Tasks": [{
                         "Name": "swarm",
                         "Driver": "docker",
                         "Config": {"image": "localhost:5000/trading_bot:v1.0.0", "network_mode": "host"},
                         "Templates": [{"EmbeddedTmpl": template_data, "DestPath": "secrets/env", "EnvVars": True}],
                         "Env": {
-                            "NUM_BOTS": "50", "PROB_BUY": "75", "PROB_SELL": "15", "PROB_CANCEL": "10",
+                            "NUM_BOTS": "50", "PROB_BUY": "60", "PROB_SELL": "10", "PROB_CANCEL": "10",  "PROB_MARKET_BUY": "15","PROB_MARKET_SELL": "5",
                             "ASSET_INITIAL_PRICE": "50000", "STD_DEV": "2.2", "SLEEP_TIMEOUT": "1",
                             "TELEMETRY_HOST": "${attr.unique.network.ip-address}", "TELEMETRY_PORT": "8125"
                         },
@@ -88,14 +88,14 @@ def get_client_swarm_payload(submission_id: str) -> dict:
                 },
                 {
                     "Name": "liquidators",
-                    "Count": 5,
+                    "Count": 3,
                     "Tasks": [{
                         "Name": "swarm",
                         "Driver": "docker",
                         "Config": {"image": "localhost:5000/trading_bot:v1.0.0", "network_mode": "host"},
                         "Templates": [{"EmbeddedTmpl": template_data, "DestPath": "secrets/env", "EnvVars": True}],
                         "Env": {
-                            "NUM_BOTS": "50", "PROB_BUY": "15", "PROB_SELL": "75", "PROB_CANCEL": "10",
+                            "NUM_BOTS": "50", "PROB_BUY": "10", "PROB_SELL": "60", "PROB_CANCEL": "10", "PROB_MARKET_BUY": "5","PROB_MARKET_SELL": "15",
                             "ASSET_INITIAL_PRICE": "50000", "STD_DEV": "2.0", "SLEEP_TIMEOUT": "2",
                             "TELEMETRY_HOST": "${attr.unique.network.ip-address}", "TELEMETRY_PORT": "8125"
                         },
