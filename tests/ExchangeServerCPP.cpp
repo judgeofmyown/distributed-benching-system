@@ -7,12 +7,15 @@
 #include <cstring>
 #include <chrono>
 #include <thread>
+#include <mutex>
 #include <algorithm>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+
+std::mutex log_mutex; // protects shared terminal printing, std::cout / std::cerr
 
 // --- Network Byte Ordering Utilities ---
 // Mapping python's float struct formatting 'f' (32-bit float) and 'q' (64-bit int)
@@ -51,7 +54,7 @@ enum class ServerMsg : uint8_t {
 struct Order {
     uint32_t order_id;
     uint32_t client_req_id;
-    int client_fd;
+    int client_id;
     uint32_t qty;
     float price;
     bool is_buy;
@@ -72,14 +75,111 @@ private:
     // Quick lookup for cancels
     std::unordered_map<uint32_t, std::shared_ptr<Order>> active_orders;
 
-    void send_packet(int client_fd, const std::vector<uint8_t>& packet) {
+    std::mutex book_mutex; // guarding internal memory structures of order matching engine
+
+    void send_packet(int client_id, const std::vector<uint8_t>& packet) {
         uint8_t len = packet.size();
-        send(client_fd, &len, 1, 0); // Write length prefix byte
-        send(client_fd, packet.data(), len, 0);
+        send(client_id, &len, 1, 0); // Write length prefix byte
+        send(client_id, packet.data(), len, 0);
     }
 
 public:
-    void send_ack(int client_fd, uint32_t client_req_id, uint32_t order_id, int64_t t_recv) {
+
+    void print_orderbook() {
+        std::lock_guard<std::mutex> lock(book_mutex);
+
+        std::cout << "\n=========== ORDER BOOK ============\n";
+        std::cout << "\n-----ASKS-----\n";
+        for (const auto& [price, orders] : asks){
+            uint32_t total_qty = 0;
+            for (const auto& order : orders){
+                total_qty += order->qty;
+            }
+            std::cout << "Price: " << price 
+                        << " | Qty: " << total_qty
+                        << " | Orders: " << orders.size()
+                        << "\n";
+        }
+
+        std::cout << "\n-----BIDS-----\n";
+        for (const auto& [price, orders] : bids){
+            uint32_t total_qty = 0;
+
+            for (const auto& order : orders){
+                total_qty += order->qty;
+            }
+
+            std::cout << "Price: " << price
+                  << " | Qty: " << total_qty
+                  << " | Orders: " << orders.size()
+                  << '\n';
+        }
+        std::cout << "===============================\n";
+    }
+    
+    void broadcast_market_data(int udp_sock, const sockaddr_in& ui_addr, size_t depth=5) {
+        std::vector<std::pair<float, uint32_t>> top_bids; 
+        std::vector<std::pair<float, uint32_t>> top_asks;
+
+        // critical section
+        {
+            std::lock_guard<std::mutex> lock(book_mutex);
+            
+            // top bids
+            for (const auto& [price, order_list] : bids) {
+                if (top_bids.size() >= depth) break;
+                uint32_t total_qty = 0;
+                for (const auto& order : order_list) {
+                    total_qty += order->qty;
+                }
+                top_bids.push_back({price, total_qty});
+            }
+            
+            // top asks
+            for (const auto& [price, order_list] : asks) {
+                if (top_asks.size() >= depth) break;
+                uint32_t total_qty = 0;
+                for (const auto& order : order_list) {
+                    total_qty += order->qty;
+                }
+                top_asks.push_back({price, total_qty});
+            }
+        }
+        
+        uint8_t num_bids = static_cast<uint8_t>(top_bids.size());
+        uint8_t num_asks = static_cast<uint8_t>(top_asks.size());
+        
+        size_t packet_size = 2 + (num_bids * 8) + (num_asks * 8);
+        std::vector<uint8_t> packet(packet_size);
+        
+        size_t cursor = 0;
+        packet[cursor++] = num_bids;
+        packet[cursor++] = num_asks;
+
+        for (const auto& [price, qty] : top_bids) {
+            uint32_t price_bin;
+            std::memcpy(&price_bin, &price, 4);
+            price_bin = htonl(price_bin);
+            uint32_t qty_bin = htonl(qty);
+
+            std::memcpy(&packet[cursor], &price_bin, 4);  cursor += 4;
+            std::memcpy(&packet[cursor], &qty_bin, 4);    cursor += 4;
+        }
+
+        for (const auto& [price, qty] : top_asks) {
+            uint32_t price_bin;
+            std::memcpy(&price_bin, &price, 4);
+            price_bin = htonl(price_bin);
+            uint32_t qty_bin = htonl(qty);
+
+            std::memcpy(&packet[cursor], &price_bin, 4);  cursor += 4;
+            std::memcpy(&packet[cursor], &qty_bin, 4);    cursor += 4;
+        }
+
+        sendto(udp_sock, packet.data(), packet.size(), 0, (struct sockaddr*)&ui_addr, sizeof(ui_addr));
+    }
+
+    void send_ack(int client_id, uint32_t client_req_id, uint32_t order_id, int64_t t_recv) {
         // Struct format: '!Biiqq' -> 1 + 4 + 4 + 8 + 8 = 25 Bytes
         std::vector<uint8_t> buffer(25);
         int64_t t_send = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -97,10 +197,10 @@ public:
         std::memcpy(&buffer[9], &tr, 8);
         std::memcpy(&buffer[17], &ts, 8);
 
-        send_packet(client_fd, buffer);
+        send_packet(client_id, buffer);
     }
 
-    void send_fill(int client_fd, uint32_t client_req_id, uint32_t order_id, uint32_t fill_qty, float exec_price, int64_t t_recv) {
+    void send_fill(int client_id, uint32_t client_req_id, uint32_t order_id, uint32_t fill_qty, float exec_price, int64_t t_recv) {
         // Struct format: '!Biiifqq' -> 1 + 4 + 4 + 4 + 4 + 8 + 8 = 33 Bytes
         std::vector<uint8_t> buffer(33);
         int64_t t_send = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -126,10 +226,10 @@ public:
         std::memcpy(&buffer[17], &tr, 8);
         std::memcpy(&buffer[25], &ts, 8);
 
-        send_packet(client_fd, buffer);
+        send_packet(client_id, buffer);
     }
 
-    void send_reject(int client_fd, uint32_t client_req_id, uint32_t order_id, uint8_t error_code) {
+    void send_reject(int client_id, uint32_t client_req_id, uint32_t order_id, uint8_t error_code) {
         // Bot expectation mismatch workaround: Bot reads length 10 as '!BiiB' (1 + 4 + 4 + 1)
         std::vector<uint8_t> buffer(10);
         uint8_t msg_type = static_cast<uint8_t>(ServerMsg::REJECT);
@@ -141,14 +241,17 @@ public:
         std::memcpy(&buffer[5], &o_id, 4);
         std::memcpy(&buffer[9], &error_code, 1);
 
-        send_packet(client_fd, buffer);
+        send_packet(client_id, buffer);
     }
 
-    void process_limit_order(uint32_t client_req_id, int client_fd, uint32_t qty, float price, bool is_buy, int64_t t_recv) {
+    void process_limit_order(uint32_t client_req_id, int client_id, uint32_t qty, float price, bool is_buy, int64_t t_recv) {
+        
+        std::lock_guard<std::mutex> lock(book_mutex);        
+
         uint32_t order_id = next_order_id++;
         
         // Instant ACK back to bot
-        send_ack(client_fd, client_req_id, order_id, t_recv);
+        send_ack(client_id, client_req_id, order_id, t_recv);
 
         // Matching Engine Execution logic
         if (is_buy) {
@@ -162,8 +265,8 @@ public:
                     match_order->qty -= fill;
 
                     // Send fills to both participants
-                    send_fill(client_fd, client_req_id, order_id, fill, match_order->price, t_recv);
-                    send_fill(match_order->client_fd, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
+                    send_fill(client_id, client_req_id, order_id, fill, match_order->price, t_recv);
+                    send_fill(match_order->client_id, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
 
                     if (match_order->qty == 0) {
                         active_orders.erase(match_order->order_id);
@@ -174,7 +277,7 @@ public:
             }
 
             if (qty > 0) {
-                auto new_order = std::make_shared<Order>(Order{order_id, client_req_id, client_fd, qty, price, true});
+                auto new_order = std::make_shared<Order>(Order{order_id, client_req_id, client_id, qty, price, true});
                 bids[price].push_back(new_order);
                 active_orders[order_id] = new_order;
             }
@@ -188,8 +291,8 @@ public:
                     qty -= fill;
                     match_order->qty -= fill;
 
-                    send_fill(client_fd, client_req_id, order_id, fill, match_order->price, t_recv);
-                    send_fill(match_order->client_fd, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
+                    send_fill(client_id, client_req_id, order_id, fill, match_order->price, t_recv);
+                    send_fill(match_order->client_id, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
 
                     if (match_order->qty == 0) {
                         active_orders.erase(match_order->order_id);
@@ -200,16 +303,18 @@ public:
             }
 
             if (qty > 0) {
-                auto new_order = std::make_shared<Order>(Order{order_id, client_req_id, client_fd, qty, price, false});
+                auto new_order = std::make_shared<Order>(Order{order_id, client_req_id, client_id, qty, price, false});
                 asks[price].push_back(new_order);
                 active_orders[order_id] = new_order;
             }
         }
     }
 
-    void process_market_order(uint32_t client_req_id, int client_fd, uint32_t qty, bool is_buy, int64_t t_recv) {
+    void process_market_order(uint32_t client_req_id, int client_id, uint32_t qty, bool is_buy, int64_t t_recv) {
+        std::lock_guard<std::mutex> lock(book_mutex);
+
         uint32_t order_id = next_order_id++;
-        send_ack(client_fd, client_req_id, order_id, t_recv);
+        send_ack(client_id, client_req_id, order_id, t_recv);
 
         if (is_buy) {
             while (qty > 0 && !asks.empty()) {
@@ -220,8 +325,8 @@ public:
                     qty -= fill;
                     match_order->qty -= fill;
 
-                    send_fill(client_fd, client_req_id, order_id, fill, match_order->price, t_recv);
-                    send_fill(match_order->client_fd, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
+                    send_fill(client_id, client_req_id, order_id, fill, match_order->price, t_recv);
+                    send_fill(match_order->client_id, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
 
                     if (match_order->qty == 0) {
                         active_orders.erase(match_order->order_id);
@@ -239,8 +344,8 @@ public:
                     qty -= fill;
                     match_order->qty -= fill;
 
-                    send_fill(client_fd, client_req_id, order_id, fill, match_order->price, t_recv);
-                    send_fill(match_order->client_fd, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
+                    send_fill(client_id, client_req_id, order_id, fill, match_order->price, t_recv);
+                    send_fill(match_order->client_id, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
 
                     if (match_order->qty == 0) {
                         active_orders.erase(match_order->order_id);
@@ -252,11 +357,13 @@ public:
         }
         if (qty > 0) {
             // Market orders remaining unfilled drop into void (no residual limit)
-            send_reject(client_fd, client_req_id, order_id, 1); 
+            send_reject(client_id, client_req_id, order_id, 1); 
         }
     }
 
-    void process_cancel_order(uint32_t client_req_id, int client_fd, uint32_t target_order_id) {
+    void process_cancel_order(uint32_t client_req_id, int client_id, uint32_t target_order_id) {
+        std::lock_guard<std::mutex> lock(book_mutex);
+
         auto it = active_orders.find(target_order_id);
         if (it != active_orders.end()) {
             auto order = it->second;
@@ -271,23 +378,35 @@ public:
             }
             active_orders.erase(it);
             // Confirm cancellation back via ACK packet channel structure
-            send_ack(client_fd, client_req_id, target_order_id, 0);
+            send_ack(client_id, client_req_id, target_order_id, 0);
         } else {
-            send_reject(client_fd, client_req_id, target_order_id, 2); // Error code 2: Not found
+            send_reject(client_id, client_req_id, target_order_id, 2); // Error code 2: Not found
         }
     }
 };
 
 // --- Client Session Socket Worker Handler ---
-void handle_client(int client_fd, OrderBook& orderbook) {
+void handle_client(int client_id, OrderBook& orderbook) {
     std::vector<uint8_t> buffer(1024);
     size_t data_buffered = 0;
 
     while (true) {
-        ssize_t bytes_read = recv(client_fd, buffer.data() + data_buffered, buffer.size() - data_buffered, 0);
+        if (data_buffered >= buffer.size()) {
+            std::lock_guard<std::mutex> lock(log_mutex);
+            std::cerr << "[-] Dynamic framing failure, closing ID: " << client_id << std::endl;
+            break;
+        }
+
+        ssize_t bytes_read = recv(client_id, buffer.data() + data_buffered, buffer.size() - data_buffered, 0);
         if (bytes_read <= 0) {
             break; // Client disconnected
         }
+        std::cerr << "[DEBUG] recv() returned: "
+          << bytes_read
+          << " bytes, client FD: "
+          << client_id
+          << std::endl;
+
         data_buffered += bytes_read;
 
         size_t cursor = 0;
@@ -325,22 +444,24 @@ void handle_client(int client_fd, OrderBook& orderbook) {
                 std::memcpy(&price, &buffer[cursor + 9], 4);
                 size = ntohl(size);
                 price = ntohf(price);
-
-                orderbook.process_limit_order(client_req_id, client_fd, size, price, (act == Action::BUY), t_recv);
+                orderbook.process_limit_order(client_req_id, client_id, size, price, (act == Action::BUY), t_recv);
+                orderbook.print_orderbook();
             } 
             else if (act == Action::MARKET_BUY || act == Action::MARKET_SELL) {
                 uint32_t size;
                 std::memcpy(&size, &buffer[cursor + 5], 4);
                 size = ntohl(size);
 
-                orderbook.process_market_order(client_req_id, client_fd, size, (act == Action::MARKET_BUY), t_recv);
+                orderbook.process_market_order(client_req_id, client_id, size, (act == Action::MARKET_BUY), t_recv);
+                orderbook.print_orderbook();  
             } 
             else if (act == Action::CANCEL) {
                 uint32_t order_id;
                 std::memcpy(&order_id, &buffer[cursor + 5], 4);
                 order_id = ntohl(order_id);
 
-                orderbook.process_cancel_order(client_req_id, client_fd, order_id);
+                orderbook.process_cancel_order(client_req_id, client_id, order_id);
+                orderbook.print_orderbook();
             }
 
             cursor += expected_len;
@@ -351,7 +472,15 @@ void handle_client(int client_fd, OrderBook& orderbook) {
             data_buffered -= cursor;
         }
     }
-    close(client_fd);
+    struct sockaddr_in peer_addr;
+    socklen_t peer_len = sizeof(peer_addr);
+    if (getpeername(client_id, (struct sockaddr*)&peer_addr, &peer_len) == 0) {
+        std::cout << "[-] Client disconnected: " << inet_ntoa(peer_addr.sin_addr) 
+                  << ":" << ntohs(peer_addr.sin_port) << " (FD: " << client_id << ")" << std::endl;
+    } else {
+        std::cout << "[-] Client disconnected (FD: " << client_id << ")" << std::endl;
+    }
+    close(client_id);
 }
 
 int main() {
@@ -362,9 +491,9 @@ int main() {
     std::string server_ip = nomad_ip ? nomad_ip : "0.0.0.0";
     int server_port = nomad_port ? std::stoi(nomad_port) : 8080;
 
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int server_id = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(server_id, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     sockaddr_in address{};
     address.sin_family = AF_INET;
@@ -375,22 +504,73 @@ int main() {
         return -1;
     }
 
-    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+    if (bind(server_id, (struct sockaddr*)&address, sizeof(address)) < 0) {
         std::cerr << "[-] Binding failed on " << server_ip << ":" << server_port << std::endl;
         return -1;
     }
 
-    listen(server_fd, 128);
+    listen(server_id, 128);
     std::cout << "[*] C++ Orderbook Engine running on " << server_ip << ":" << server_port << "..." << std::endl;
     
     OrderBook orderbook;
+    
+    std::thread([&orderbook]() {
+        // Fetch UI configuration from environment variables with safe defaults
+        const char* env_ui_ip = std::getenv("MD_UI_IP");
+        const char* env_ui_port = std::getenv("MD_UI_PORT");
+
+        std::string ui_ip = env_ui_ip ? env_ui_ip : "127.0.0.1";
+        int ui_port = env_ui_port ? std::stoi(env_ui_port) : 9999;
+
+        // Create non-blocking UDP Socket
+        int udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (udp_sock < 0) {
+            std::cerr << "[-] Failed to create UDP socket for Market Data" << std::endl;
+            return;
+        }
+
+        sockaddr_in ui_addr{};
+        ui_addr.sin_family = AF_INET;
+        ui_addr.sin_port = htons(ui_port);
+        
+        if (inet_pton(AF_INET, ui_ip.c_str(), &ui_addr.sin_addr) <= 0) {
+            std::cerr << "[-] Invalid UDP UI IP format: " << ui_ip << std::endl;
+            close(udp_sock);
+            return;
+        }
+
+        // Optional log showing configuration validation on boot
+        {
+            std::lock_guard<std::mutex> lock(log_mutex);
+            std::cout << "[*] UDP Market Data streaming active to " << ui_ip << ":" << ui_port << "..." << std::endl;
+        }
+
+        while (true) {
+            // Ticks market data frame updates 20 times a second (Every 50ms)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            orderbook.broadcast_market_data(udp_sock, ui_addr, 5);
+        }
+        close(udp_sock);    
+    }).detach();
+
     while (true) {
-        int client_id = accept(server_fd, nullptr, nullptr);
+        sockaddr_in client_addr{};
+        socklen_t client_len = sizeof(client_addr);
+
+        int client_id = accept(server_id, (struct sockaddr*)&client_addr, &client_len);
         if (client_id >= 0) {
+            char ip_str[INET_ADDRSTRLEN] = {0};
+            inet_ntop(AF_INET, &(client_addr.sin_addr), ip_str, INET_ADDRSTRLEN);
+
+            {
+                std::lock_guard<std::mutex> lock(log_mutex);
+                std::cout << "[+] Client connected from " << ip_str 
+                          << ":" << ntohs(client_addr.sin_port) << " (ID: " << client_id << ")" << std::endl;
+            }
             std::thread(handle_client, client_id, std::ref(orderbook)).detach();
         }
     }
     
-    close(server_fd);
+    close(server_id);
     return 0;
 }
