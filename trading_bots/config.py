@@ -1,7 +1,7 @@
 import os
 
-SERVER_HOST         = os.getenv("SERVER_HOST", "127.0.0.1")
-SERVER_PORT         = int(os.getenv("SERVER_PORT", "8888"))
+SERVER_HOST         = os.getenv("SERVER_HOST", "0.0.0.0")
+SERVER_PORT         = int(os.getenv("SERVER_PORT", 8080))
 PROB_BUY            = int(os.getenv("PROB_BUY", "30"))
 PROB_SELL           = int(os.getenv("PROB_SELL", "30"))
 PROB_CANCEL         = int(os.getenv("PROB_CANCEL", "10"))

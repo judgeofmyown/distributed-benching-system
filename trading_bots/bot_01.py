@@ -206,16 +206,20 @@ class Bot:
                     if act_enum == Action.BUY: self.buys += 1
                     else: self.sells += 1
                     order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, size=size, price=price)
+                    print(f"[+] BOT: {action} : {size} : {price}")
+
                 elif len(command) == 2 and isinstance(command[0], str) and command[0].startswith("MARKET"):
                     action, size = command
                     act_enum = Action.MARKET_BUY if action == "MARKET_BUY" else Action.MARKET_SELL
                     if act_enum == Action.MARKET_BUY: self.buys += 1
                     else: self.sells += 1
                     order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, size=size)
+                    print(f"[+] BOT: {action} : {size}")
                 else:
                     action, order_id = command
                     self.canceled += 1
                     order_bin_packet = self.encode_order(Action.CANCEL, client_req_id=client_req_id, order_id=order_id)
+                    print(f"[+] BOT: {action} : {order_id}")
 
                 # write to the server commands
                 writer.write(order_bin_packet)
@@ -223,7 +227,6 @@ class Bot:
                 self.network_latency[client_req_id] = time.time_ns()
                 await writer.drain()
                 self.orders_sent +=1
-
                 if self.orders_sent >= self.target_orders:
                     self.sending = False
             except (ConnectionResetError, BrokenPipeError):

@@ -41,9 +41,8 @@ async def main_async():
     reporter_task = asyncio.create_task(telemetry_reporter_worker(telemetry_host, telemetry_port))
 
     swarm = [Bot(ASSET_INITIAL_PRICE, METRICS_QUEUE) for _ in range(NUM_BOTS)]
-
-    for bot in swarm:
-        await bot.start()
+    
+    await asyncio.gather(*(bot.start() for bot in swarm)) # schedules all bot coroutine to run at a same time.
     
     # keeps the main process alive untill all bots disconnect from the sever.
     while any(bot.is_connected for bot in swarm):
