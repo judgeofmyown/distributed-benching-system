@@ -8,28 +8,40 @@
 </head>
 <body>
 
-    <nav class="global-nav-cntr">
-        <a href="index.html">Home</a>
-        <a href="about.html">About</a>
-    </nav>
+    <div class="global_container">
+        <div class="orderbook">
+            <div class="orderbook-col">
+                <div class="col-title bids-title">Bids</div>
+                <div class="table-header">
+                    <span>Price</span>
+                    <span>Qty</span>
+                </div>
+                <div id="bids-list" class="order-list bids-list"></div>
+
+                <div class="orderbook-col">
+                    <div class="col-title asks-title">Asks</div>
+                    <div class="table-header">
+                        <span>Price</span>
+                        <span>Qty</span>
+                    </div>
+                    <div id="asks-list" class="order-list asks-list"></div>
+                </div>
+            </div>
+
+            <div id="status" class="connection-status">Connecting to WebSocket...</div> 
+        </div>
+
+        <div class="bot_telemetry">
+            <div id="metric">
+
+            </div>
+        </div>
+
+    </div>
     
-    <div class="local-tab-cntr">
-        <a href="leaderBoard.html">Leader Board</a>
-    </div>
-
-    <div class="uploadNStat-cntr">            
-        <div class="submitFile-cntr">    
-        <form id="uploadCode">
-            <input type="file" id="file">
-            <button type="submit">Submit</button>
-        </form>
-        </div>
-
-        <div class="Perf-stat-cntr">
-            <h2>Performance stats...</h2>
-        </div>
-    </div>
-
+    
     <script type="module" src="src/js/app.js"></script>
+    <script type="module" src="src/js/market_viewer.js"></script>
+    <script type="module" src="src/js/telemetry.js"></script>
 </body>
 </html>
