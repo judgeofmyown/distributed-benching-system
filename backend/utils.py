@@ -4,11 +4,14 @@ import os
 import sys
 
 def parse_binary_market_packet(data: bytes) -> dict:
+    """
+        Parses the binary market packet from and return a dictionary of bids & asks
+    """
+
     if len(data) < 2:
         return None
     
     num_bids, num_asks =struct.unpack("!BB", data[0:2])
-
     expected_len = 2 + (num_bids * 8) + (num_asks * 8)
 
     if len(data) < expected_len:
