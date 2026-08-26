@@ -5,43 +5,123 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My Multi-Page App</title>
     <link rel="stylesheet" href="src/css/style.css">
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 
     <div class="global_container">
-        <div class="orderbook">
-            <div class="orderbook-col">
-                <div class="col-title bids-title">Bids</div>
-                <div class="table-header">
-                    <span>Price</span>
-                    <span>Qty</span>
-                </div>
-                <div id="bids-list" class="order-list bids-list"></div>
+
+    <div class="arena_container">
+
+        <!-- ORDER BOOK -->
+        <div class="orderbook panel">
+
+            <div class="panel-title">ORDER BOOK</div>
+
+            <div class="orderbook-columns">
 
                 <div class="orderbook-col">
-                    <div class="col-title asks-title">Asks</div>
+                    <div class="col-title bids-title">BIDS</div>
+
                     <div class="table-header">
                         <span>Price</span>
                         <span>Qty</span>
                     </div>
+
+                    <div id="bids-list" class="order-list bids-list"></div>
+                </div>
+
+                <div class="orderbook-divider"></div>
+
+                <div class="orderbook-col">
+                    <div class="col-title asks-title">ASKS</div>
+
+                    <div class="table-header">
+                        <span>Price</span>
+                        <span>Qty</span>
+                    </div>
+
                     <div id="asks-list" class="order-list asks-list"></div>
+                </div>
+
+            </div>
+
+            <div id="status" class="connection-status">
+                Connecting...
+            </div>
+
+        </div>
+
+
+        <!-- CHARTS -->
+        <div class="charts-container">
+
+            <div id="price-chart" class="graph panel">
+                <div class="chart-title">PRICE</div>
+            </div>
+
+            <div id="spread-chart" class="graph panel">
+                <div class="chart-title">SPREAD</div>
+            </div>
+
+        </div>
+
+
+        <!-- RIGHT SIDE -->
+        <div class="right-panel">
+
+            <div class="score-container panel">
+
+                <div class="score-label">
+                    SYSTEM SCORE
+                </div>
+
+                <div id="system-score">
+                    --
+                </div>
+
+            </div>
+            <div class="score-container panel" style="margin-top: 15px;">
+                <div class="score-label">
+                    SWARM THROUGHPUT
+                </div>
+                <div id="bench-score" style="color: #FF9800; font-weight: bold;">
+                    -- OPS
                 </div>
             </div>
 
-            <div id="status" class="connection-status">Connecting to WebSocket...</div> 
-        </div>
-        
-        <div class="graph">
-            
-        </div>
-
-        <div class="bot_telemetry">
-            <div id="metric">
-
-            </div>
         </div>
 
     </div>
+
+
+    <!-- TELEMETRY -->
+    <div class="bot_telemetry panel">
+
+        <div class="panel-title">
+            TELEMETRY & HEALTH
+        </div>
+
+            <!-- Split into two columns for Exchange Metrics and System Health -->
+        <div style="display: flex; gap: 40px; margin-top: 10px;">
+            
+            <!-- Existing Exchange Metrics -->
+            <div style="flex: 1;">
+                <div class="score-label" style="margin-bottom: 10px; opacity: 0.7; font-size: 0.9em;">EXCHANGE LATENCY</div>
+                <div id="metric"></div>
+            </div>
+
+            <!-- NEW: Benchmark System Metrics -->
+            <div style="flex: 1;">
+                <div class="score-label" style="margin-bottom: 10px; opacity: 0.7; font-size: 0.9em;">BENCHMARK SYSTEM</div>
+                <div id="bench-metric"></div>
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
     
     
     <script type="module" src="src/js/app.js"></script>
