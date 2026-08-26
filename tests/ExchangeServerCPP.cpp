@@ -445,7 +445,7 @@ void handle_client(int client_id, OrderBook& orderbook) {
                 size = ntohl(size);
                 price = ntohf(price);
                 orderbook.process_limit_order(client_req_id, client_id, size, price, (act == Action::BUY), t_recv);
-                orderbook.print_orderbook();
+                // orderbook.print_orderbook();
             } 
             else if (act == Action::MARKET_BUY || act == Action::MARKET_SELL) {
                 uint32_t size;
@@ -453,7 +453,7 @@ void handle_client(int client_id, OrderBook& orderbook) {
                 size = ntohl(size);
 
                 orderbook.process_market_order(client_req_id, client_id, size, (act == Action::MARKET_BUY), t_recv);
-                orderbook.print_orderbook();  
+                // orderbook.print_orderbook();  
             } 
             else if (act == Action::CANCEL) {
                 uint32_t order_id;
@@ -461,7 +461,7 @@ void handle_client(int client_id, OrderBook& orderbook) {
                 order_id = ntohl(order_id);
 
                 orderbook.process_cancel_order(client_req_id, client_id, order_id);
-                orderbook.print_orderbook();
+                // orderbook.print_orderbook();
             }
 
             cursor += expected_len;
