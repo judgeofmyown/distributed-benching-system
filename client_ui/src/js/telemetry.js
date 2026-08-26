@@ -12,10 +12,10 @@ function connectWebSocketTelemetry(){
         const metric_message = JSON.parse(event.data);
         console.log("metric message got!!")
         if (metric_message.type == "BOT_TELE_BATCH"){
-            const metric_list = metric_message.metrics;
+            const metric_dict = metric_message.metrics;
 
             requestAnimationFrame(() => {
-                renderMetrics(metric_list);
+                renderMetrics(metric_dict);
             });
         }else{
             console.error("Invalid message type")
@@ -28,12 +28,12 @@ function connectWebSocketTelemetry(){
     };
 }
 
-function renderMetrics(metric_list) {
-    metric_container.innerHTML = metric_list.map(
-        (item) => `
-        <p>${item.name}, ${item.value}, ${item.unit}</p>
+function renderMetrics(metric_dict) {
+    metric_container.innerHTML = Object.entries(metric_dict).map(
+        ([name, value]) => `
+            <p>${name} -> ${value}</p>
         `
-    ).join("");
+    )
 }
 
 connectWebSocketTelemetry();

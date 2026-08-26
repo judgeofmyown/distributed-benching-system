@@ -12,6 +12,9 @@
   width: 90%;
   padding: 5px;
   margin: 0 auto;
+  display: flex;
+  flex-direction: row;
+  gap: 1rem;
 }
 
 html,
@@ -34,3 +37,24 @@ body {
   height: 100%;
 }
 
+.bot_telemetry {
+  display: flex;
+  width: 400px;
+  height: 400px;
+  border: 2px solid black;
+  flex-direction: column;
+  background-color: #b7bcb7;
+  padding: 5px;
+  overflow: auto;
+}
+
+.bot_telemetry #metric {
+  width: 100%;
+  height: 100%;
+}
+
+.graph{
+  width: 100%;
+  height: 80%;
+  border: 2px solid black;
+}
