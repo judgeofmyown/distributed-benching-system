@@ -50,6 +50,11 @@ enum class ServerMsg : uint8_t {
     REJECT = 30
 };
 
+enum class MDMsgType : uint8_t {
+    BOOK_SNAPSHOT = 1,
+    TRADE = 2
+};
+
 // --- Order & Data Structures ---
 struct Order {
     uint32_t order_id;
@@ -77,47 +82,63 @@ private:
 
     std::mutex book_mutex; // guarding internal memory structures of order matching engine
 
+    bool md_enabled = false;
+    int md_udp_sock = -1;
+    sockaddr_in md_ui_addr{};
+    uint64_t md_seq_num = 1;
+    uint32_t md_trade_id = 1;
+
     void send_packet(int client_id, const std::vector<uint8_t>& packet) {
         uint8_t len = packet.size();
         send(client_id, &len, 1, 0); // Write length prefix byte
         send(client_id, packet.data(), len, 0);
     }
 
+    void write_md_header(std::vector<uint8_t>& packet, MDMsgType type, size_t offset = 0) {
+        uint8_t t = static_cast<uint8_t>(type);
+        uint64_t seq = htonll(md_seq_num++);
+        uint64_t ts = htonll(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()).count());
+        
+            packet[offset] = t;
+        std::memcpy(&packet[offset + 1], &seq, 8);
+        std::memcpy(&packet[offset + 9], &ts, 8);            
+    }
+
+    void broadcast_trade_event(float exec_price, uint32_t fill_qty) {
+        if (!md_enabled) return;
+            // Header(17) + trade_id(4) + price(4) + qty(4) = 29 Bytes
+        size_t packet_size = 17 + 12;
+        std::vector<uint8_t> packet(packet_size);
+                
+        write_md_header(packet, MDMsgType::TRADE);
+                
+        size_t cursor = 17;
+        uint32_t t_id = htonl(md_trade_id++);
+        uint32_t f_qty = htonl(fill_qty);
+                
+        uint32_t price_bin;
+        std::memcpy(&price_bin, &exec_price, 4);
+        price_bin = htonl(price_bin);
+
+        std::memcpy(&packet[cursor], &t_id, 4);      cursor += 4;
+        std::memcpy(&packet[cursor], &price_bin, 4); cursor += 4;
+        std::memcpy(&packet[cursor], &f_qty, 4);
+                
+        sendto(md_udp_sock, packet.data(), packet.size(), 0, (struct sockaddr*)&md_ui_addr, sizeof(md_ui_addr));    
+    }
+
 public:
 
-    void print_orderbook() {
-        std::lock_guard<std::mutex> lock(book_mutex);
-
-        std::cout << "\n=========== ORDER BOOK ============\n";
-        std::cout << "\n-----ASKS-----\n";
-        for (const auto& [price, orders] : asks){
-            uint32_t total_qty = 0;
-            for (const auto& order : orders){
-                total_qty += order->qty;
-            }
-            std::cout << "Price: " << price 
-                        << " | Qty: " << total_qty
-                        << " | Orders: " << orders.size()
-                        << "\n";
-        }
-
-        std::cout << "\n-----BIDS-----\n";
-        for (const auto& [price, orders] : bids){
-            uint32_t total_qty = 0;
-
-            for (const auto& order : orders){
-                total_qty += order->qty;
-            }
-
-            std::cout << "Price: " << price
-                  << " | Qty: " << total_qty
-                  << " | Orders: " << orders.size()
-                  << '\n';
-        }
-        std::cout << "===============================\n";
+    void enable_market_data(int sock, const sockaddr_in& addr) {
+        md_udp_sock = sock;
+        md_ui_addr = addr;
+        md_enabled = true;
     }
     
-    void broadcast_market_data(int udp_sock, const sockaddr_in& ui_addr, size_t depth=5) {
+    void broadcast_market_data(size_t depth=5) {
+        if (!md_enabled) return;
+
         std::vector<std::pair<float, uint32_t>> top_bids; 
         std::vector<std::pair<float, uint32_t>> top_asks;
 
@@ -149,10 +170,12 @@ public:
         uint8_t num_bids = static_cast<uint8_t>(top_bids.size());
         uint8_t num_asks = static_cast<uint8_t>(top_asks.size());
         
-        size_t packet_size = 2 + (num_bids * 8) + (num_asks * 8);
+        size_t packet_size = 17 + 2 + (num_bids * 8) + (num_asks * 8);
         std::vector<uint8_t> packet(packet_size);
+
+        write_md_header(packet, MDMsgType::BOOK_SNAPSHOT);
         
-        size_t cursor = 0;
+        size_t cursor = 17;
         packet[cursor++] = num_bids;
         packet[cursor++] = num_asks;
 
@@ -161,7 +184,6 @@ public:
             std::memcpy(&price_bin, &price, 4);
             price_bin = htonl(price_bin);
             uint32_t qty_bin = htonl(qty);
-
             std::memcpy(&packet[cursor], &price_bin, 4);  cursor += 4;
             std::memcpy(&packet[cursor], &qty_bin, 4);    cursor += 4;
         }
@@ -176,7 +198,7 @@ public:
             std::memcpy(&packet[cursor], &qty_bin, 4);    cursor += 4;
         }
 
-        sendto(udp_sock, packet.data(), packet.size(), 0, (struct sockaddr*)&ui_addr, sizeof(ui_addr));
+        sendto(md_udp_sock, packet.data(), packet.size(), 0, (struct sockaddr*)&md_ui_addr, sizeof(md_ui_addr));
     }
 
     void send_ack(int client_id, uint32_t client_req_id, uint32_t order_id, int64_t t_recv) {
@@ -267,6 +289,8 @@ public:
                     // Send fills to both participants
                     send_fill(client_id, client_req_id, order_id, fill, match_order->price, t_recv);
                     send_fill(match_order->client_id, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
+                    
+                    broadcast_trade_event(match_order->price, fill);
 
                     if (match_order->qty == 0) {
                         active_orders.erase(match_order->order_id);
@@ -293,6 +317,8 @@ public:
 
                     send_fill(client_id, client_req_id, order_id, fill, match_order->price, t_recv);
                     send_fill(match_order->client_id, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
+                    
+                    broadcast_trade_event(match_order->price, fill);
 
                     if (match_order->qty == 0) {
                         active_orders.erase(match_order->order_id);
@@ -328,6 +354,8 @@ public:
                     send_fill(client_id, client_req_id, order_id, fill, match_order->price, t_recv);
                     send_fill(match_order->client_id, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
 
+                    broadcast_trade_event(match_order->price, fill);
+
                     if (match_order->qty == 0) {
                         active_orders.erase(match_order->order_id);
                         order_list.erase(order_list.begin());
@@ -346,6 +374,8 @@ public:
 
                     send_fill(client_id, client_req_id, order_id, fill, match_order->price, t_recv);
                     send_fill(match_order->client_id, match_order->client_req_id, match_order->order_id, fill, match_order->price, t_recv);
+                    
+                    broadcast_trade_event(match_order->price, fill);
 
                     if (match_order->qty == 0) {
                         active_orders.erase(match_order->order_id);
@@ -514,44 +544,30 @@ int main() {
     
     OrderBook orderbook;
     
-    std::thread([&orderbook]() {
-        // Fetch UI configuration from environment variables with safe defaults
-        const char* env_ui_ip = std::getenv("MD_UI_IP");
-        const char* env_ui_port = std::getenv("MD_UI_PORT");
+    const char* env_ui_ip = std::getenv("MD_UI_IP");
+    const char* env_ui_port = std::getenv("MD_UI_PORT");
+    std::string ui_ip = env_ui_ip ? env_ui_ip : "127.0.0.1";
+    int ui_port = env_ui_port ? std::stoi(env_ui_port) : 9999;
 
-        std::string ui_ip = env_ui_ip ? env_ui_ip : "127.0.0.1";
-        int ui_port = env_ui_port ? std::stoi(env_ui_port) : 9999;
-
-        // Create non-blocking UDP Socket
-        int udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
-        if (udp_sock < 0) {
-            std::cerr << "[-] Failed to create UDP socket for Market Data" << std::endl;
-            return;
-        }
-
+    int udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_sock >= 0) {
         sockaddr_in ui_addr{};
         ui_addr.sin_family = AF_INET;
         ui_addr.sin_port = htons(ui_port);
+        inet_pton(AF_INET, ui_ip.c_str(), &ui_addr.sin_addr);
         
-        if (inet_pton(AF_INET, ui_ip.c_str(), &ui_addr.sin_addr) <= 0) {
-            std::cerr << "[-] Invalid UDP UI IP format: " << ui_ip << std::endl;
-            close(udp_sock);
-            return;
-        }
+        orderbook.enable_market_data(udp_sock, ui_addr);
+        
+        std::cout << "[*] UDP Market Data feed active to " << ui_ip << ":" << ui_port << "..." << std::endl;
 
-        // Optional log showing configuration validation on boot
-        {
-            std::lock_guard<std::mutex> lock(log_mutex);
-            std::cout << "[*] UDP Market Data streaming active to " << ui_ip << ":" << ui_port << "..." << std::endl;
-        }
-
-        while (true) {
-            // Ticks market data frame updates 20 times a second (Every 50ms)
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            orderbook.broadcast_market_data(udp_sock, ui_addr, 5);
-        }
-        close(udp_sock);    
-    }).detach();
+        // Dedicated snapshot publisher thread
+        std::thread([&orderbook]() {
+            while (true) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                orderbook.broadcast_market_data(5);
+            }
+        }).detach();
+    }
 
     while (true) {
         sockaddr_in client_addr{};
