@@ -5,6 +5,7 @@ import os
 import socket
 
 METRICS_QUEUE = asyncio.Queue(maxsize = 100000)
+PROCESS_TIMEOUT_SECONDS = 200
 
 async def telemetry_reporter_worker(telemetry_host, telemetry_port):
     """ Drains the single shared container queue and streams metrics over UDP """
@@ -41,16 +42,27 @@ async def main_async():
     reporter_task = asyncio.create_task(telemetry_reporter_worker(telemetry_host, telemetry_port))
 
     swarm = [Bot(ASSET_INITIAL_PRICE, METRICS_QUEUE) for _ in range(NUM_BOTS)]
-    
-    await asyncio.gather(*(bot.start() for bot in swarm)) # schedules all bot coroutine to run at a same time.
-    
-    # keeps the main process alive untill all bots disconnect from the sever.
-    while any(bot.is_connected for bot in swarm):
-        await asyncio.sleep(1)
-    
-    print("[-] All bots disconnected. Stopping telemetry worker...")
-    reporter_task.cancel()
-    await asyncio.gather(reporter_task, return_exceptions=True)
+
+    bot_tasks = [asyncio.create_task(bot.start()) for bot in swarm]
+
+    bots_group = asyncio.gather(*bot_tasks)
+
+    try:
+        await asyncio.wait_for(bots_group, timeout=PROCESS_TIMEOUT_SECONDS)
+        print("[-] All bots disconnected naturally.")
+    except asyncio.TimeoutError:
+        print(f"[!] Timeout of {PROCESS_TIMEOUT_SECONDS}s reaached. Initiating graceful shutdown...")
+
+        for bot in swarm:
+            await bot.stop()
+
+        print("[*] Waiting for network drain...")
+        await asyncio.gather(*bot_tasks, return_exceptions=True)
+    finally:
+        print("[-] Stopping telemetry worker...")
+        reporter_task.cancel()
+        await asyncio.gather(reporter_task, return_exceptions=True)
+        # await asyncio.gather(*bot_tasks, return_exceptions=True)
 
 def main():
     asyncio.run(main_async())

@@ -61,7 +61,7 @@ class Bot:
         self.req_id_gen         = RequestIdGenerator()
         
         self.orders_sent        = 0
-        self.target_orders      = 1000
+        self.target_orders      = 99999 # intentional to not remove the logic for limited orders.
         self.sending            = True
         self.drain_time         = 10 # seconds
         
@@ -83,49 +83,51 @@ class Bot:
         ex: [9]0x0A6734432300000231, which is encoding for, ACK[1 byte], Client request ID[4 byte], Order ID[4 byte]
         """
         print(f"[+] Bot {self.b_id} started listening loop.")
-        while True:
-            try:
-                # Listening Binary encoded messages
-                length = (await reader.readexactly(1))[0]
-                msg_packet = await reader.readexactly(length)
-
-                time_arrival_ns = time.time_ns()
-
-                if length == 25:
-                    # ACK message
-                    msg_type, client_req_id, order_id, t_recv, t_send = struct.unpack("!Biiqq", msg_packet)
-
-                    t_start_ns = self.network_latency.pop(client_req_id, None)
-                    if t_start_ns is not None:
-                        total_rtt_ms = (time_arrival_ns - t_start_ns) / 1_000_000.0
-                        server_processing_ms = (t_send - t_recv)  / 1_000_000.0
-                        wire_flight_ms = total_rtt_ms - server_processing_ms
-
-                        try:
-                            self.metrics_queue.put_nowait((total_rtt_ms, server_processing_ms, wire_flight_ms))
-                        except asyncio.QueueFull:
-                            pass
-
-                    self.order_ids.append(order_id)
-
-
-                elif length == 33:
-                    # Trade Execution message
-                    msg_type, client_req_id, order_id, fill_qty, exec_price, t_recv, t_send = struct.unpack("!Biiifqq", msg_packet)
-
-                elif length == 10:
-                    msg_type, client_req_id, order_id, error_code = struct.unpack("!BiiB", msg_packet)
-
-
-            except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
-                print(f"[-] Bot {self.b_id}: Error listening to Exchange server!")
-                self.is_connected = False
-                break
         try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:
-            pass
+            while True:
+                try:
+                    # Listening Binary encoded messages
+                    length = (await reader.readexactly(1))[0]
+                    msg_packet = await reader.readexactly(length)
+
+                    time_arrival_ns = time.time_ns()
+
+                    if length == 25:
+                        # ACK message
+                        msg_type, client_req_id, order_id, t_recv, t_send = struct.unpack("!Biiqq", msg_packet)
+
+                        t_start_ns = self.network_latency.pop(client_req_id, None)
+                        if t_start_ns is not None:
+                            total_rtt_ms = (time_arrival_ns - t_start_ns) / 1_000_000.0
+                            server_processing_ms = (t_send - t_recv)  / 1_000_000.0
+                            wire_flight_ms = total_rtt_ms - server_processing_ms
+
+                            try:
+                                self.metrics_queue.put_nowait((total_rtt_ms, server_processing_ms, wire_flight_ms))
+                            except asyncio.QueueFull:
+                                pass
+
+                        self.order_ids.append(order_id)
+
+
+                    elif length == 33:
+                        # Trade Execution message
+                        msg_type, client_req_id, order_id, fill_qty, exec_price, t_recv, t_send = struct.unpack("!Biiifqq", msg_packet)
+
+                    elif length == 10:
+                        msg_type, client_req_id, order_id, error_code = struct.unpack("!BiiB", msg_packet)
+
+
+                except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
+                    print(f"[-] Bot {self.b_id}: Error listening to Exchange server!")
+                    self.is_connected = False
+                    break
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
 
     def encode_order(self, action: Action, client_req_id: int, order_id: int|None = None, size: int|None = None, price: float|None = None) -> bytes:
         """fixed length binary encoding"""
@@ -206,7 +208,7 @@ class Bot:
                     if act_enum == Action.BUY: self.buys += 1
                     else: self.sells += 1
                     order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, size=size, price=price)
-                    print(f"[+] BOT: {action} : {size} : {price}")
+                    # print(f"[+] BOT: {action} : {size} : {price}")
 
                 elif len(command) == 2 and isinstance(command[0], str) and command[0].startswith("MARKET"):
                     action, size = command
@@ -214,12 +216,12 @@ class Bot:
                     if act_enum == Action.MARKET_BUY: self.buys += 1
                     else: self.sells += 1
                     order_bin_packet = self.encode_order(act_enum, client_req_id=client_req_id, size=size)
-                    print(f"[+] BOT: {action} : {size}")
+                    # print(f"[+] BOT: {action} : {size}")
                 else:
                     action, order_id = command
                     self.canceled += 1
                     order_bin_packet = self.encode_order(Action.CANCEL, client_req_id=client_req_id, order_id=order_id)
-                    print(f"[+] BOT: {action} : {order_id}")
+                    # print(f"[+] BOT: {action} : {order_id}")
 
                 # write to the server commands
                 writer.write(order_bin_packet)
@@ -233,6 +235,11 @@ class Bot:
                 print(f"[-] Bot {self.b_id}: Connection broken while writing pipeline.")
                 self.is_connected = False
                 break
+    async def stop(self):
+        self.sending = False
+
+        if hasattr(self, 'strategy_task') and not self.strategy_task.done():
+            self.strategy_task.cancel()
 
     async def start(self):
         """connects to exchange server"""
@@ -249,13 +256,17 @@ class Bot:
         self.listen_task = asyncio.create_task(self.listen_to_exchange(reader, writer))
         self.strategy_task = asyncio.create_task(self.strategy_coroutine(writer))
 
-        await self.strategy_task
+        try:
+            await self.strategy_task
+        except asyncio.CancelledError:
+            print(f"[-] Bot {self.b_id}: Strategy stopped, entering drain state...")
 
         await asyncio.sleep(self.drain_time)
-        
+
         self.listen_task.cancel()
         try:
             await self.listen_task
         except asyncio.CancelledError:
             pass
 
+        self.is_connected = False
