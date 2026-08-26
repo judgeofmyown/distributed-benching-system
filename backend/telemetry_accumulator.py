@@ -31,6 +31,23 @@ class Accumulator:
     def __len__(self):
         return len(self.data_rtt)
 
+    def calculate_score(self, metrics: dict) -> float:
+        """
+        Computes a unified benchmark score (0-100)
+        """
+        engine_latency_penalty = metrics['srvr_proc_p90'] * 5.0
+        engine_jitter_penalty = metrics['srvr_proc_jitter'] * 10.0
+
+        engine_score = max(0.0, 60.0 - engine_latency_penalty - engine_jitter_penalty)
+
+        rtt_latency_penalty = metrics['rtt_p90'] * 1.0
+        rtt_jitter_penalty = metrics['rtt_jitter'] * 2.0
+
+        network_score = max(0.0, 40 - rtt_latency_penalty - rtt_jitter_penalty)
+
+        total_score = engine_score + network_score
+        return round(total_score, 2)
+
     def compute_metrics(self, data: deque):
         data = np.array(data)
 
@@ -79,7 +96,7 @@ class Accumulator:
         srvr_proc_m = self.compute_metrics(self.data_srvr_procc)
         wire_m = self.compute_metrics(self.data_ntwrk_wire)
 
-        return {
+        metrics_dict = {
             "rtt_50": round(rtt_m["p50"], 4),
             "rtt_p90": round(rtt_m["p90"], 4),
             "rtt_p95": round(rtt_m["p95"], 4),
@@ -104,6 +121,10 @@ class Accumulator:
             "wire_flight_iqr": round(wire_m["iqr"], 4),
             "wire_flight_jitter": round(wire_m["jitter"], 4),
         }
+
+        metrics_dict["system_score"] = self.calculate_score(metrics_dict)
+
+        return metrics_dict
 
     def clean(self):
         self.data_rtt.clear()
