@@ -1,8 +1,6 @@
-import socket
 import random
 import asyncio
 import uuid
-import threading
 import time
 import struct
 from enum import IntEnum
@@ -189,12 +187,14 @@ class Bot:
                 1 Byte + 4 byte (Int: ClientReq Id) + 4 byte (Int: Order Id)
                 'Bii'
         """
+        orders_in_window = 0
+        throughput_timer = time.time()
+
         while self.is_connected and self.sending:
             # wait for some time before taking order action
             await asyncio.sleep(self.sleep_timeout)
             if not self.is_connected: # checking incase connection droped whle sleep
                 break
-
 
             command = self.order_action() 
             client_req_id = self.req_id_gen.get()
@@ -228,7 +228,22 @@ class Bot:
                 # record the time msg sent
                 self.network_latency[client_req_id] = time.time_ns()
                 await writer.drain()
+
                 self.orders_sent +=1
+
+                orders_in_window += 1
+                now = time.time()
+                if now - throughput_timer >= 1.0:
+                    emission_metric = f"benchmark.bot.emission:{orders_in_window}|count\n"
+
+                    try:
+                        self.metrics_queue.put_nowait(emission_metric)
+                    except asyncio.QueueFull:
+                        pass
+
+                    orders_in_window = 0
+                    throughput_timer = now
+
                 if self.orders_sent >= self.target_orders:
                     self.sending = False
             except (ConnectionResetError, BrokenPipeError):

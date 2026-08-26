@@ -11,20 +11,26 @@ async def telemetry_reporter_worker(telemetry_host, telemetry_port):
     """ Drains the single shared container queue and streams metrics over UDP """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     print(f"[+] Container telemetry worker active. Streaming to {telemetry_host}:{telemetry_port}")
-    
+    batch = []
     while True:
         try:
-            total_rtt, server_proc, wire_time = await METRICS_QUEUE.get()
+            item = await METRICS_QUEUE.get()
+            if isinstance(item, str):
+                batch.append(item.strip()) # Strip to prevent double newlines
+            else:
+                total_rtt, server_proc, wire_time = item
+                batch.append(f"exchange.bot.rtt:{total_rtt:.3f}|ms")
+                batch.append(f"exchange.engine.processing:{server_proc:.3f}|ms")
+                batch.append(f"exchange.network.wire:{wire_time:.3f}|ms")
             
-            # Format using standard StatsD metrics format
-            payload = (
-                f"exchange.bot.rtt:{total_rtt:.3f}|ms\n"
-                f"exchange.engine.processing:{server_proc:.3f}|ms\n"
-                f"exchange.network.wire:{wire_time:.3f}|ms"
-            ).encode('utf-8')
-            
-            sock.sendto(payload, (telemetry_host, telemetry_port))
             METRICS_QUEUE.task_done()
+            if len(batch) >= 50 or METRICS_QUEUE.empty():
+                if batch:
+                    # Combine all metrics with a newline and send as ONE single UDP packet
+                    payload = "\n".join(batch).encode('utf-8')
+                    sock.sendto(payload, (telemetry_host, telemetry_port))
+                    batch.clear()
+                    
         except asyncio.CancelledError:
             break
         except Exception:
