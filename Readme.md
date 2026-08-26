@@ -8,7 +8,49 @@ Benchmarking is based upon the metrics collected from the swarm bot attacks. Met
 - frontend, a simple designed UI in HTML/CSS & JavScript to collect the data using websockets.
 
 ### How to run in dev mode
-instructions dedo :pray
+The system consists of four components:
+
+- Client — dashboard frontend
+- Backend — WebSocket/telemetry server
+- Exchange Engine — simulated exchange
+- Bots — automated trading clients
+
+### Startup
+
+Start the components in separate terminals.
+
+#### 1. Start the frontend
+```
+cd client_ui
+npx serve
+```
+#### 2. Start the backed
+```
+cd backend
+python3 main.py
+```
+
+#### 3. Start the engine (compile first and change name as per changes)
+```
+cd tests
+./engine_main.exe
+```
+
+#### 4. Start the Swarm Bots
+```
+cd trading_bots
+python3 main.py
+```
+
+### System performance
+Tested currently with only `10` Bots with timeout `0.01 seconds`(time a bot takes before its another order) reaching `OPS` (Orders Per Second) 900~.
+The benching system showed quite ease on these testing with `event loop lag` not exceeding `1.5ms`
+also `Accumulator performance` in processing was in range `1 ~ 2ms`. 
+/*These are visual estimates*/ even then it proves that their is a room for much large scale testing. 
+
+Performance of the test exchange was average, on average the system score was around `55` when the `OPS` was low (10~20). But when cranked up the `OPS` the average score increased `80`. /*These are visual estimates*/. I cant figure what might cause this increase.
+
+/*Visual estimates were made since the test ran for 2 minutes and accumulation was not done, once done accurate metrics will be computed they will be mentioned here, also since the values didnt fluctuate randomly and the system performed in a stable manner.*/
 
 ### Technologies used 
 Python, FastAPI, Asyncio, cpp, 
